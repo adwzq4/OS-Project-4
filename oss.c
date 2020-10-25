@@ -38,14 +38,72 @@
 //	int PIDmap[20];
 //};
 int procMax = 100;
+int msqid, shmid, currentChildren;
+key_t shmkey, msqkey;
+struct shmseg* shmptr;
+
+void createMemory() {
+	// create shared memory segment the same size as struct shmseg and get its shmid
+	shmkey = ftok("oss", 137);
+	shmid = shmget(shmkey, sizeof(struct shmseg), 0666 | IPC_CREAT);
+	if (shmid == -1) {
+		perror("oss: Error");
+		exit(-1);
+	}
+
+	// attach struct pointer to shared memory segment
+	shmptr = shmat(shmid, (void*)0, 0);
+	if (shmptr == (void*)-1) {
+		perror("oss: Error");
+	}
+
+	msqkey = ftok("oss", 731);
+	msqid = msgget(msqkey, 0666 | IPC_CREAT);
+	if (msqid == -1) {
+		perror("oss: Error");
+	}
+}
+
+void destroyMemory() {
+	// destroys message queue
+	if (msgctl(msqid, IPC_RMID, NULL) == -1) {
+		perror("msgctl");
+		exit(1);
+	}
+
+	// detaches shmseg from shared memory, then destroys shared memory segment
+	if (shmdt(shmptr) == -1) {
+		perror("oss: Error");
+		exit(-1);
+	}
+	if (shmctl(shmid, IPC_RMID, 0) == -1) {
+		perror("oss: Error");
+		exit(-1);
+	}
+}
+
+void mWait(int* status) {
+	if (wait(&status) > 0) {
+		if (WIFEXITED(status) && WEXITSTATUS(status)) {
+			if (WEXITSTATUS(status) == 127) perror("oss: Error");
+			else perror("oss: Error");
+		}
+		//else perror("oss: Error");
+	}
+}
 
 // sends message to stderr, kills all processes in this process group, which is 
 // ignored by parent, then zeros out procMax so no new processes are spawned
 static void interruptHandler(int s) {
+	int status, i;
 	fprintf(stderr, "\nInterrupt recieved.\n");
 	signal(SIGQUIT, SIG_IGN);
 	kill(-getpid(), SIGQUIT);
-	procMax = 0;
+	destroyMemory();
+	for (i = 0; i < currentChildren; i++) {
+		mWait(&status);
+	}
+	exit(0);
 }
 
 // sets up sigaction for SIGALRM
@@ -72,39 +130,7 @@ static int setupitimer() {
 	return (setitimer(ITIMER_REAL, &value, NULL));
 }
 
-// adds two mtime structs
-struct mtime addTime(struct mtime t1, int sec, long ns) {
-	t1.sec += sec;
-	t1.ns += ns;
-	if (t1.ns >= BILLION) {
-		t1.ns -= BILLION;
-		t1.sec++;
-	}
-	
-	return t1;
-}
-
-void mWait(int* status) {
-	if (wait(&status) > 0) {
-		if (WIFEXITED(status) && WEXITSTATUS(status)) {
-			if (WEXITSTATUS(status) == 127) perror("master: Error");
-			else perror("master: Error");
-		}
-		else perror("master: Error");
-	}
-}
-
-int main(int argc, char* argv[]) {
-	struct msgbuf buf;
-	int msqid, shmid, status, currentChildren;
-	key_t shmkey, msqkey;
-	pid_t pid;
-	const int USERRATIO = 9;
-	const long MAXWAIT = BILLION;
-	long delay;
-	FILE* fp;
-	int i, totalProcs;
-
+static int setupInterrupts() {
 	// sets up timer, and SIGALRM and SIGINT handlers
 	if (setupitimer() == -1) {
 		perror("oss: Error");
@@ -118,59 +144,53 @@ int main(int argc, char* argv[]) {
 		perror("oss: Error");
 		exit(-1);
 	}
+}
 
-	// create shared memory segment the same size as struct shmseg and get its shmid
-	shmkey = ftok("oss", 137);
-	shmid = shmget(shmkey, sizeof(struct shmseg), 0666 | IPC_CREAT);
-	if (shmid == -1) {
-		perror("oss: Error");
-		exit(-1);
+int main(int argc, char* argv[]) {
+	struct msgbuf buf;
+	int status;
+	pid_t pid;
+	const int USERRATIO = 9;
+	const long MAXWAIT = BILLION;
+	struct mtime timeToNextProc;
+	FILE* fp;
+	int i, totalProcs;
+
+	struct Queue* active[4];
+	for (i = 0; i < 4; i++) {
+		active[i] = createQueue();
 	}
 
-	// attach struct pointer to shared memory segment
-	struct shmseg* shmptr = shmat(shmid, (void*)0, 0);
-	if (shmptr == (void*)-1) {
-		perror("oss: Error");
-		exit(-1);
-	}
+	setupInterrupts();
 
-	for (i = 0; i < 20; i++) {
-		shmptr->PIDmap[i] = i != 0 ?  0 : 1;
+	createMemory();
+
+	for (i = 0; i < 19; i++) {
+		shmptr->PIDmap[i] = i != 0 ? 0 : 1;
 	}
 	shmptr->currentTime.sec = 0; shmptr->currentTime.ns = 0;
-
-	msqkey = ftok("oss", 731);
-	msqid = msgget(msqkey, 0666 | IPC_CREAT);
-	if (msqid == -1) {
-		perror("oss: Error");
-		exit(-1);
-	}
-
-	buf.type = 0;
 
 	fp = fopen("output.log", "w+");
 	if (fp == NULL) {
 		perror("oss: Error");
-		exit(-1);
 	}
 	fclose(fp);
 	fp = fopen("output.log", "a");
 	if (fp == NULL) {
 		perror("oss: Error");
-		exit(-1);
 	}
 
 	currentChildren = 0;
 	srand(time(0));
 
 	totalProcs = 0;
-	while (totalProcs < procMax) {
-		long x = rand();
-		delay = x < MAXWAIT ? x : MAXWAIT;
-		shmptr->currentTime = addTime(shmptr->currentTime, delay / BILLION, delay % BILLION);
+	//int queuePos = 0;
+	while (totalProcs < 10) {
+		timeToNextProc = (struct mtime){ shmptr->currentTime.sec + rand() % 3, shmptr->currentTime.ns };
+		shmptr->currentTime = addTime(shmptr->currentTime, 1, rand() % 1001);
 
-		if (currentChildren < 20) {
-			for (i = 1; i < 20; i++) if (shmptr->PIDmap[i] == 0) break;
+		if (currentChildren < 18 && compareTimes(shmptr->currentTime, timeToNextProc)) {
+			for (i = 1; i < 19; i++) if (shmptr->PIDmap[i] == 0) break;
 			shmptr->PIDmap[i] = 1;
 			currentChildren++;
 			totalProcs++;
@@ -179,10 +199,10 @@ int main(int argc, char* argv[]) {
 			shmptr->processTable[i - 1] = p;
 			if (rand() % 10 == USERRATIO) {
 				shmptr->processTable[i - 1].priority = 0;
-				shmptr->processTable[i - 1].pClass = realTime;
+					shmptr->processTable[i - 1].pClass = realTime;
 			}
 
-			fprintf(fp, "OSS: Generating process with PID %d and putting it in queue __ at time %d.%ul s\n", i, shmptr->currentTime.sec, shmptr->currentTime.ns);
+			fprintf(fp, "OSS: Generating process with PID %d and putting it in queue 0 at time %f s\n", i, shmptr->currentTime.sec + (double)shmptr->currentTime.ns / BILLION);
 
 			pid = fork();
 
@@ -201,9 +221,45 @@ int main(int argc, char* argv[]) {
 			}
 
 			else {
-				mWait(&status);
-				currentChildren--;
+				//enqueue(active[shmptr->processTable[i - 1].priority], i);
+				printf("OSS: putting process with PID %d in queue %d\n", i, 0);
+				enqueue(active[0], i);
+				while (currentChildren >= 18) {
+					mWait(&status);
+					currentChildren--;
+				}
 			}
+		}
+
+		//int j = 0;
+		//while (isEmpty(active[queuePos]) && j < 4) {
+		//	queuePos = (queuePos + 1) % 4;
+		//	j++;
+		//}
+		if (!isEmpty(active[0])) {
+			buf.type = dequeue(active[0]);
+			printf("OSS: dispatching process with PID %d from queue %d at time %f s\n", buf.type, 0, shmptr->currentTime.sec + (double)shmptr->currentTime.ns/BILLION);
+			//sprintf(buf.text, "%d", BILLION / 100);
+			strcpy(buf.text, "");
+			buf.time = BILLION / 100;
+			buf.pid = 0;
+			if (msgsnd(msqid, &buf, sizeof(struct msgbuf), 0) == -1) {
+				perror("msgsnd");
+			}
+
+			int scheduleTime = rand() % 10000 + 100;
+			shmptr->currentTime = addTime(shmptr->currentTime, 0, scheduleTime);
+			printf("OSS: dispatch took %d ns\n", scheduleTime);
+
+			if (msgrcv(msqid, &buf, sizeof(struct msgbuf), 20, 0) == -1) {
+				perror("msgrcv");
+			}
+			//printf("oss: msqid: %d", msqid);
+
+			printf("OSS: process with PID %d ran for %d ns, %s.\n", buf.pid, buf.time, buf.text);
+			shmptr->currentTime = addTime(shmptr->currentTime, 0, buf.time);
+
+			enqueue(active[0], buf.pid);
 		}
 	}
 
@@ -211,23 +267,7 @@ int main(int argc, char* argv[]) {
 		mWait(&status);
 	}
 
-	// destroys message queue
-	if (msgctl(msqid, IPC_RMID, NULL) == -1) {
-		perror("msgctl");
-		exit(1);
-	}
+	destroyMemory();
 
-	// detaches shmseg from shared memory, then destroys shared memory segment
-	if (shmdt(shmptr) == -1) {
-		perror("oss: Error");
-		exit(-1);
-	}
-	if (shmctl(shmid, IPC_RMID, 0) == -1) {
-		perror("oss: Error");
-		exit(-1);
-	}
-	
 	fclose(fp);
-
-	return 0;
 }
