@@ -37,13 +37,21 @@
 //	struct PCB processTable[19];
 //	int PIDmap[20];
 //};
+FILE* fp;
 int procMax = 100;
 int msqid, shmid, currentChildren;
 key_t shmkey, msqkey;
 struct shmseg* shmptr;
+struct statistics stats;
 
+struct statistics {
+	struct mtime idle;
+	struct mtime active;
+	int numComplete;
+};
+
+// creates a shared memory segment and a message queue
 void createMemory() {
-	// create shared memory segment the same size as struct shmseg and get its shmid
 	shmkey = ftok("oss", 137);
 	shmid = shmget(shmkey, sizeof(struct shmseg), 0666 | IPC_CREAT);
 	if (shmid == -1) {
@@ -51,7 +59,6 @@ void createMemory() {
 		exit(-1);
 	}
 
-	// attach struct pointer to shared memory segment
 	shmptr = shmat(shmid, (void*)0, 0);
 	if (shmptr == (void*)-1) {
 		perror("oss: Error");
@@ -64,14 +71,13 @@ void createMemory() {
 	}
 }
 
+// destroys message queue, and detaches and destroys shared memory
 void destroyMemory() {
-	// destroys message queue
 	if (msgctl(msqid, IPC_RMID, NULL) == -1) {
 		perror("msgctl");
 		exit(1);
 	}
-
-	// detaches shmseg from shared memory, then destroys shared memory segment
+	
 	if (shmdt(shmptr) == -1) {
 		perror("oss: Error");
 		exit(-1);
@@ -80,8 +86,25 @@ void destroyMemory() {
 		perror("oss: Error");
 		exit(-1);
 	}
+
+	printf("Time idle: %f\t\tTime active: %f\n", stats.idle.sec + (double)stats.idle.ns / BILLION, stats.active.sec + (double)stats.active.ns / BILLION);
+	fclose(fp);
 }
 
+// deletes any existing file output.log, then creates one in append mode
+void setupFile() {
+	fp = fopen("output.log", "w+");
+	if (fp == NULL) {
+		perror("oss: Error");
+	}
+	fclose(fp);
+	fp = fopen("output.log", "a");
+	if (fp == NULL) {
+		perror("oss: Error");
+	}
+}
+
+// outputs possible errors for wait() call
 void mWait(int* status) {
 	if (wait(&status) > 0) {
 		if (WIFEXITED(status) && WEXITSTATUS(status)) {
@@ -124,14 +147,14 @@ static int setupSIGINT(void) {
 	return (sigaction(SIGINT, &sigIntAct, NULL));
 }
 
-// sets ups itimer with value of tMax and interval of 0
+// sets ups itimer with time of 3s and interval of 0s
 static int setupitimer() {
 	struct itimerval value = { {0, 0}, {3, 0} };
 	return (setitimer(ITIMER_REAL, &value, NULL));
 }
 
+// sets up timer, and SIGALRM and SIGINT handlers
 static int setupInterrupts() {
-	// sets up timer, and SIGALRM and SIGINT handlers
 	if (setupitimer() == -1) {
 		perror("oss: Error");
 		exit(-1);
@@ -148,18 +171,21 @@ static int setupInterrupts() {
 
 int main(int argc, char* argv[]) {
 	struct msgbuf buf;
+	struct statistics s = { {0,0}, {0,0}, 0 };
 	int status;
 	pid_t pid;
-	const int USERRATIO = 9;
+	const int USERRATIO = 8;
 	const long MAXWAIT = BILLION;
 	struct mtime timeToNextProc;
-	FILE* fp;
+
 	int i, totalProcs;
 
 	struct Queue* active[4];
 	for (i = 0; i < 4; i++) {
 		active[i] = createQueue();
 	}
+
+	stats = s;
 
 	setupInterrupts();
 
@@ -170,15 +196,7 @@ int main(int argc, char* argv[]) {
 	}
 	shmptr->currentTime.sec = 0; shmptr->currentTime.ns = 0;
 
-	fp = fopen("output.log", "w+");
-	if (fp == NULL) {
-		perror("oss: Error");
-	}
-	fclose(fp);
-	fp = fopen("output.log", "a");
-	if (fp == NULL) {
-		perror("oss: Error");
-	}
+	setupFile();
 
 	currentChildren = 0;
 	srand(time(0));
@@ -187,7 +205,9 @@ int main(int argc, char* argv[]) {
 	//int queuePos = 0;
 	while (totalProcs < 10) {
 		timeToNextProc = (struct mtime){ shmptr->currentTime.sec + rand() % 3, shmptr->currentTime.ns };
-		shmptr->currentTime = addTime(shmptr->currentTime, 1, rand() % 1001);
+		int wait = rand() % 1001;
+		shmptr->currentTime = addTime(shmptr->currentTime, 1, wait);
+		stats.idle = addTime(stats.idle, 1, wait);
 
 		if (currentChildren < 18 && compareTimes(shmptr->currentTime, timeToNextProc)) {
 			for (i = 1; i < 19; i++) if (shmptr->PIDmap[i] == 0) break;
@@ -197,7 +217,7 @@ int main(int argc, char* argv[]) {
 
 			struct PCB p = { i, 1, rand() % 4 + 1, 0, user, { 0, 0 }, { 0, 0 }, 0 };
 			shmptr->processTable[i - 1] = p;
-			if (rand() % 10 == USERRATIO) {
+			if (rand() % 10 > USERRATIO) {
 				shmptr->processTable[i - 1].priority = 0;
 					shmptr->processTable[i - 1].pClass = realTime;
 			}
@@ -239,7 +259,6 @@ int main(int argc, char* argv[]) {
 		if (!isEmpty(active[0])) {
 			buf.type = dequeue(active[0]);
 			printf("OSS: dispatching process with PID %d from queue %d at time %f s\n", buf.type, 0, shmptr->currentTime.sec + (double)shmptr->currentTime.ns/BILLION);
-			//sprintf(buf.text, "%d", BILLION / 100);
 			strcpy(buf.text, "");
 			buf.time = BILLION / 100;
 			buf.pid = 0;
@@ -249,6 +268,7 @@ int main(int argc, char* argv[]) {
 
 			int scheduleTime = rand() % 10000 + 100;
 			shmptr->currentTime = addTime(shmptr->currentTime, 0, scheduleTime);
+			stats.active = addTime(stats.active, 0, scheduleTime);
 			printf("OSS: dispatch took %d ns\n", scheduleTime);
 
 			if (msgrcv(msqid, &buf, sizeof(struct msgbuf), 20, 0) == -1) {
@@ -258,16 +278,13 @@ int main(int argc, char* argv[]) {
 
 			printf("OSS: process with PID %d ran for %d ns, %s.\n", buf.pid, buf.time, buf.text);
 			shmptr->currentTime = addTime(shmptr->currentTime, 0, buf.time);
+			stats.active = addTime(stats.active, 0, buf.time);
 
 			enqueue(active[0], buf.pid);
 		}
 	}
 
-	for (i = 0; i < currentChildren; i++) {
-		mWait(&status);
-	}
+	for (i = 0; i < currentChildren; i++) mWait(&status);
 
 	destroyMemory();
-
-	fclose(fp);
 }

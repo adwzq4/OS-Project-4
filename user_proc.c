@@ -43,6 +43,7 @@ int main(int argc, char* argv[]) {
 	//struct msgbuf buf2;
 	int wholeQ, amountQ;
 	int i, q;
+	const int TERMRATIO = 9;
 
 	int pid = atoi(argv[0]);
 	srand(pid * time(0));
@@ -69,7 +70,7 @@ int main(int argc, char* argv[]) {
 		perror("user_proc: Error");
 	}
 
-	while (1) {
+	do {
 		printf("msqid: %d\n", msqid);
 		if (msgrcv(msqid, &buf, sizeof(struct msgbuf), pid, 0) == -1) {
 			perror("user_proc: Error");
@@ -96,8 +97,9 @@ int main(int argc, char* argv[]) {
 		if (msgsnd(msqid, &buf, sizeof(struct msgbuf), 0) == -1) {
 			perror("user_proc: Error");
 		}
-	}
-	//shmptr->PIDmap[pid] = 0;
+	} while (rand() % 10 < TERMRATIO);
+
+	shmptr->PIDmap[pid] = 0;
 
 	// detaches shmseg from shared memory
 	if (shmdt(shmptr) == -1) {
