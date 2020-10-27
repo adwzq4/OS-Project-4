@@ -16,12 +16,6 @@
 #include "shared.h"
 
 //enum class { user, realTime };
-//
-//struct msgbuf {
-//	long type;
-//	char text[200];
-//};
-//
 //struct PCB {
 //	int PID;
 //	int PPID;
@@ -32,7 +26,6 @@
 //	timespec lifetime;
 //	long int lastBurst;
 //};
-//
 //struct shmseg {
 //	struct PCB processTable[19];
 //	int PIDmap[20];
@@ -77,7 +70,6 @@ void destroyMemory() {
 		perror("msgctl");
 		exit(1);
 	}
-	
 	if (shmdt(shmptr) == -1) {
 		perror("oss: Error");
 		exit(-1);
@@ -172,36 +164,29 @@ static int setupInterrupts() {
 int main(int argc, char* argv[]) {
 	struct msgbuf buf;
 	struct statistics s = { {0,0}, {0,0}, 0 };
-	int status;
+	struct mtime timeToNextProc;
+	int status, i, totalProcs;
 	pid_t pid;
 	const int USERRATIO = 8;
 	const long MAXWAIT = BILLION;
-	struct mtime timeToNextProc;
-
-	int i, totalProcs;
-
 	struct Queue* active[4];
+
 	for (i = 0; i < 4; i++) {
 		active[i] = createQueue();
 	}
 
 	stats = s;
-
 	setupInterrupts();
-
 	createMemory();
+	setupFile();
+	currentChildren = totalProcs = 0;
+	srand(time(0));
 
 	for (i = 0; i < 19; i++) {
 		shmptr->PIDmap[i] = i != 0 ? 0 : 1;
 	}
-	shmptr->currentTime.sec = 0; shmptr->currentTime.ns = 0;
+	shmptr->currentTime.sec = shmptr->currentTime.ns = 0;
 
-	setupFile();
-
-	currentChildren = 0;
-	srand(time(0));
-
-	totalProcs = 0;
 	//int queuePos = 0;
 	while (totalProcs < 10) {
 		timeToNextProc = (struct mtime){ shmptr->currentTime.sec + rand() % 3, shmptr->currentTime.ns };
@@ -244,10 +229,6 @@ int main(int argc, char* argv[]) {
 				//enqueue(active[shmptr->processTable[i - 1].priority], i);
 				printf("OSS: putting process with PID %d in queue %d\n", i, 0);
 				enqueue(active[0], i);
-				while (currentChildren >= 18) {
-					mWait(&status);
-					currentChildren--;
-				}
 			}
 		}
 
@@ -276,15 +257,21 @@ int main(int argc, char* argv[]) {
 			}
 			//printf("oss: msqid: %d", msqid);
 
-			printf("OSS: process with PID %d ran for %d ns, %s.\n", buf.pid, buf.time, buf.text);
+			if (strcmp(buf.text, "terminated\0") == 0)  {
+				printf("OSS: process with PID %d %s after running for %d ns.\n", buf.pid, buf.text, buf.time);
+				mWait(&status);
+				currentChildren--;
+			}
+			else {
+				printf("OSS: process with PID %d ran for %d ns, %s.\n", buf.pid, buf.time, buf.text);
+				enqueue(active[0], buf.pid);
+			}
+
 			shmptr->currentTime = addTime(shmptr->currentTime, 0, buf.time);
 			stats.active = addTime(stats.active, 0, buf.time);
-
-			enqueue(active[0], buf.pid);
 		}
 	}
 
 	for (i = 0; i < currentChildren; i++) mWait(&status);
-
 	destroyMemory();
 }

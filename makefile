@@ -2,8 +2,8 @@ CC = gcc
 CFLAGS = -g -o
 TARGET_1 = oss
 TARGET_2 = user_proc
-OBJS_1 = oss.c
-OBJS_2 = user_proc.c
+OBJS_1 = oss.c shared.c
+OBJS_2 = user_proc.c shared.c
 
 all: $(TARGET_1) $(TARGET_2)
 
