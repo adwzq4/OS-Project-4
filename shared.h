@@ -14,6 +14,12 @@ struct mtime {
 	long int ns;
 };
 
+struct statistics {
+	struct mtime idle;
+	struct mtime active;
+	int numComplete;
+};
+
 struct msgbuf {
     long type;
     int pid;
@@ -46,6 +52,7 @@ struct Queue {
 
 struct mtime addTime(struct mtime, int, long);
 int compareTimes(struct mtime, struct mtime);
+double timeToDouble(struct mtime);
 struct Queue* createQueue();
 int isFull(struct Queue*);
 int isEmpty(struct Queue*);

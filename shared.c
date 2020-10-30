@@ -26,6 +26,11 @@ int compareTimes(struct mtime t1, struct mtime t2) {
     else return 1;
 }
 
+// converts an mtime struct to a double
+double timeToDouble(struct mtime t){
+    return t.sec + (double)t.ns / BILLION;
+}
+
 // function to create a queue 
 // of given capacity. 
 // It initializes size of queue as 0 

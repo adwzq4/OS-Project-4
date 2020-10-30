@@ -13,15 +13,6 @@
 #include <sys/msg.h>
 #include "shared.h"
 
-//#define BILLION 1000000000
-//
-//enum class { user, realTime };
-//
-//struct msgbuf {
-//	long type;
-//	char text[200];
-//};
-//
 //struct PCB {
 //	int PID;
 //	int PPID;
@@ -32,15 +23,9 @@
 //	timespec lifetime;
 //	long int lastBurst;
 //};
-//
-//struct shmseg {
-//	struct PCB processTable[19];
-//	int PIDmap[20];
-//};
 
 int main(int argc, char* argv[]) {
 	struct msgbuf buf;
-	//struct msgbuf buf2;
 	int wholeQ, amountQ;
 	int i, q;
 	const int TERMRATIO = 5;
@@ -94,25 +79,21 @@ int main(int argc, char* argv[]) {
 			break;
 		}
 
+		if (shmptr->processTable[pid-1].pClass == user) wholeQ = rand() % 2;
+		else wholeQ = 1;
 
-		wholeQ = rand() % 2;
 		if (wholeQ == 0) {
-			//amountQ = rand() % q;
-			strcpy(buf.text, "only part of its quantum");
+			strcpy(buf.text, "part");
 			buf.time = rand() % q;
-			//sprintf(buf.text, "only part of its quantum.", amountQ);
 		}
 		else {
-			strcpy(buf.text, "all of its quantum");
-			//buf.time = q;
+			strcpy(buf.text, "all");
 		}
 
 		if (msgsnd(msqid, &buf, sizeof(struct msgbuf), 0) == -1) {
 			perror("user_proc: Error");
 		}
 	}
-
-	shmptr->PIDmap[pid] = 0;
 
 	// detaches shmseg from shared memory
 	if (shmdt(shmptr) == -1) {
