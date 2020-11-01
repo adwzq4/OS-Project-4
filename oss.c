@@ -33,17 +33,17 @@ void createMemory() {
 	}
 
 	shmptr = shmat(shmid, (void*)0, 0);
-	if (shmptr == (void*)-1) perror("oss: Error");
+	if (shmptr == (void*)-1) { perror("oss: Error"); }
 
 	msqkey = ftok("oss", 731);
 	msqid = msgget(msqkey, 0666 | IPC_CREAT);
-	if (msqid == -1) perror("oss: Error");
+	if (msqid == -1) { perror("oss: Error"); }
 }
 
 // destroys message queue, and detaches and destroys shared memory
 void cleanup() {
-	printf("\nTime idle: %f s\t\tTime active: %f s\n", timeToDouble(stats.idle), timeToDouble(stats.active));
-	printf("Throughput: %f jobs/minute\n", stats.numComplete * 60 / timeToDouble(shmptr->currentTime));
+	fprintf(fp, "\nTime idle: %f s\t\tTime active: %f s\n", timeToDouble(stats.idle), timeToDouble(stats.active));
+	fprintf(fp, "Throughput: %f jobs/minute\n", stats.numComplete * 60 / timeToDouble(shmptr->currentTime));
 	fclose(fp);
 	if (msgctl(msqid, IPC_RMID, NULL) == -1) {
 		perror("oss: msgctl");
@@ -59,27 +59,22 @@ void cleanup() {
 	}
 }
 
-// deletes any existing file output.log, then creates one in append mode
+// deletes output.log if it exists, then creates it in append mode
 void setupFile() {
 	fp = fopen("output.log", "w+");
-	if (fp == NULL) {
-		perror("oss: Error");
-	}
+	if (fp == NULL) { perror("oss: Error"); }
 	fclose(fp);
 	fp = fopen("output.log", "a");
-	if (fp == NULL) {
-		perror("oss: Error");
-	}
+	if (fp == NULL) { perror("oss: Error"); }
 }
 
 // outputs possible errors for wait() call
 void mWait(int* status) {
 	if (wait(&status) > 0) {
 		if (WIFEXITED(status) && WEXITSTATUS(status)) {
-			if (WEXITSTATUS(status) == 127) perror("oss: Error");
-			else perror("oss: Error");
+			if (WEXITSTATUS(status) == 127) { perror("oss: Error"); }
+			else { perror("oss: Error"); }
 		}
-		//else perror("oss: Error");
 	}
 }
 
@@ -137,7 +132,7 @@ static int setupInterrupts() {
 
 // spawns and schedules children according to multi-level feedback algorithm, keeping track of statistics
 int main(int argc, char* argv[]) {
-	int status, i, totalProcs;
+	int status, i, x, totalProcs;
 	pid_t pid;
 	const int USERRATIO = 8, PROCMAX = 100;;
 	const long MAXWAIT = BILLION;
@@ -148,23 +143,26 @@ int main(int argc, char* argv[]) {
 	struct Queue* active[4];
 	struct Queue* expired[4];
 	struct Queue* RTqueue;
+	struct Queue* blockedQueue;
 
 	// creates queues
 	RTqueue = createQueue();
+	blockedQueue = createQueue();
 	for (i = 0; i < 4; i++) {
 		active[i] = createQueue();
 		expired[i] = createQueue();
 	}
 
+	// initialize
 	stats = s;
+	currentChildren = totalProcs = 0;
 	setupInterrupts();
 	createMemory();
 	setupFile();
-	currentChildren = totalProcs = 0;
 	srand(time(0));
 
 	// initialize PIDmap and currentTime
-	for (i = 0; i < 19; i++) shmptr->PIDmap[i] = i != 0 ? 0 : 1;
+	for (i = 0; i < 19; i++) { shmptr->PIDmap[i] = i != 0 ? 0 : 1; }
 	shmptr->currentTime.sec = shmptr->currentTime.ns = 0;
 
 	// runs OSS until 100 processes have been spawned
@@ -176,17 +174,32 @@ int main(int argc, char* argv[]) {
 		shmptr->currentTime = addTime(shmptr->currentTime, 0, wait);
 		stats.idle = addTime(stats.idle, 0, wait);
 
+		// check blocked queue for ready processes, and put any active processes into active queue 1
+		for (i = 0; i < blockedQueue->size; i++) {
+			x = dequeue(blockedQueue);
+			if (shmptr->processTable[x-1].pState == ready) {
+				shmptr->processTable[x-1].priority = 1;
+				enqueue(active[0], x);
+				fprintf(fp, "OSS: process with PID %d woke up: putting it into active queue 1\n", x);
+
+				int unblockTime = rand() % 1000000 + 500000;
+				shmptr->currentTime = addTime(shmptr->currentTime, 0, unblockTime);
+				stats.idle = addTime(stats.idle, 0, unblockTime);
+			}
+			else { enqueue(blockedQueue, x); }
+		}
+
 		// spawns new process if process table isn't full and delay period has passed
 		if (currentChildren < 18 && compareTimes(shmptr->currentTime, timeToNextProc)) {
 			// finds available pid for new process, sets corresponding index of PIDmap to 1, and increments totalProcs and currentChildren
-			for (i = 1; i < 19; i++) if (shmptr->PIDmap[i] == 0) break;
+			for (i = 1; i < 19; i++) { if (shmptr->PIDmap[i] == 0) { break; } }
 			shmptr->PIDmap[i] = 1;
 			currentChildren++;
 			totalProcs++;
 
 			// initializes process control block with pid=i, ppid=0, user class 90% of the time, in which case priority
 			// is random value [1-4], and real time class 10% of the time, everything else initialized to 0
-			struct PCB p = { i, 0, rand() % 4 + 1, 0, user, { 0, 0 }, { 0, 0 }, 0 };
+			struct PCB p = { i, 0, rand() % 4 + 1, ready, user, { 0, 0 }, { 0, 0 }, 0 };
 			shmptr->processTable[i - 1] = p;
 			if (rand() % 10 > USERRATIO) {
 				shmptr->processTable[i - 1].priority = 0;
@@ -215,12 +228,12 @@ int main(int argc, char* argv[]) {
 			// if child was real time process, add to real time queue, otherwise add to an active queue according to priority level
 			else {
 				if (shmptr->processTable[i - 1].pClass == realTime) {
-					printf("OSS: Generating process with PID %d and putting it in real time queue at time %f s\n", i, timeToDouble(shmptr->currentTime));
+					fprintf(fp, "OSS: generating process with PID %d and putting it in real time queue at time %f s\n", i, timeToDouble(shmptr->currentTime));
 					enqueue(RTqueue, i);
 				}
 				else {
 					int x = shmptr->processTable[i - 1].priority;
-					printf("OSS: Generating process with PID %d and putting it in active queue %d at time %f s\n", i, x, timeToDouble(shmptr->currentTime));
+					fprintf(fp, "OSS: generating process with PID %d and putting it in active queue %d at time %f s\n", i, x, timeToDouble(shmptr->currentTime));
 					enqueue(active[x - 1], i);
 				}
 			}
@@ -229,23 +242,23 @@ int main(int argc, char* argv[]) {
 		// if there is a real time process ready, schedule it
 		if (!isEmpty(RTqueue)) {
 			buf.type = dequeue(RTqueue);
-			printf("\nOSS: dispatching process with PID %d from real time queue at time %f s\n", buf.type, 0, timeToDouble(shmptr->currentTime));
+			fprintf(fp, "\nOSS: dispatching process with PID %d from real time queue at time %f s\n", buf.type, 0, timeToDouble(shmptr->currentTime));
 			strcpy(buf.text, "");
 			buf.time = baseQuantum;
 			buf.pid = 0;
-			if (msgsnd(msqid, &buf, sizeof(struct msgbuf), 0) == -1) perror("msgsnd");
+			if (msgsnd(msqid, &buf, sizeof(struct msgbuf), 0) == -1) { perror("msgsnd"); }
 
 			int scheduleTime = rand() % 10000 + 100;
 			shmptr->currentTime = addTime(shmptr->currentTime, 0, scheduleTime);
 			stats.active = addTime(stats.active, 0, scheduleTime);
-			printf("OSS: dispatch took %d ns\n", scheduleTime);
+			fprintf(fp, "OSS: dispatch took %d ns\n", scheduleTime);
 
 			// send message to scheduled process telling it how much time it should run
-			if (msgrcv(msqid, &buf, sizeof(struct msgbuf), 20, 0) == -1) perror("msgrcv");
+			if (msgrcv(msqid, &buf, sizeof(struct msgbuf), 20, 0) == -1) { perror("msgrcv"); }
 
 			// handle process termination
 			if (strcmp(buf.text, "terminated\0") == 0) {
-				printf("OSS: process with PID %d %s after running for %d ns.\n", buf.pid, buf.text, buf.time);
+				fprintf(fp, "OSS: process with PID %d %s after running for %d ns\n", buf.pid, buf.text, buf.time);
 				shmptr->PIDmap[buf.pid] = 0;
 				stats.numComplete++;
 				//shmptr->processTable[buf.pid-1] = NULL;
@@ -253,7 +266,7 @@ int main(int argc, char* argv[]) {
 				currentChildren--;
 			}
 			else {
-				printf("OSS: process with PID %d ran for %d ns, %s of its quantum.\n", buf.pid, buf.time, buf.text);
+				fprintf(fp, "OSS: process with PID %d ran for %d ns, %s of its quantum\n", buf.pid, buf.time, buf.text);
 				enqueue(RTqueue, buf.pid);
 			}
 
@@ -263,53 +276,58 @@ int main(int argc, char* argv[]) {
 
 		// otherwise, if there is a process in an active queue, schedule the one at the head of the highest priority queue
 		else {
-			for (i = 0; i < 4; i++) if (!isEmpty(active[i])) break;
+			for (i = 0; i < 4; i++) { if (!isEmpty(active[i])) { break; } }
 			// if no processes are active, swap active and expired queue arrays and re-search active queues for highest priority
 			if (i == 4) {
-				printf("OSS: No active processes: swapping active and expired queues.\n");
+				fprintf(fp, "OSS: No active processes: swapping active and expired queues\n");
 				for (i = 0; i < 4; i++) {
 					struct Queue* tmp = active[i];
 					active[i] = expired[i];
 					expired[i] = tmp;
 				}
-				for (i = 0; i < 4; i++) if (!isEmpty(active[i])) break;
+				for (i = 0; i < 4; i++) { if (!isEmpty(active[i])) { break; } }
 			}
 			// if there is a process in an active queue, schedule the one at the head of the highest priority queue
 			if (i != 4) {
 				buf.type = dequeue(active[i]);
-				printf("\nOSS: dispatching process with PID %d from active queue %d at time %f s\n", buf.type, i + 1, timeToDouble(shmptr->currentTime));
+				fprintf(fp, "\nOSS: dispatching process with PID %d from active queue %d at time %f s\n", buf.type, i + 1, timeToDouble(shmptr->currentTime));
 				strcpy(buf.text, "");
 				buf.time = baseQuantum / pow(2, i);
 				buf.pid = 0;
-				if (msgsnd(msqid, &buf, sizeof(struct msgbuf), 0) == -1) perror("msgsnd");
+				if (msgsnd(msqid, &buf, sizeof(struct msgbuf), 0) == -1) { perror("msgsnd"); }
 
 				int scheduleTime = rand() % 10000 + 100;
 				shmptr->currentTime = addTime(shmptr->currentTime, 0, scheduleTime);
 				stats.active = addTime(stats.active, 0, scheduleTime);
-				printf("OSS: dispatch took %d ns\n", scheduleTime);
+				fprintf(fp, "OSS: dispatch took %d ns\n", scheduleTime);
 
 				// send message to scheduled process telling it how much time it should run
-				if (msgrcv(msqid, &buf, sizeof(struct msgbuf), 20, 0) == -1) perror("msgrcv");
+				if (msgrcv(msqid, &buf, sizeof(struct msgbuf), 20, 0) == -1) { perror("msgrcv"); }
 
 				// handle process termination
 				if (strcmp(buf.text, "terminated\0") == 0) {
-					printf("OSS: process with PID %d %s after running for %d ns.\n", buf.pid, buf.text, buf.time);
+					fprintf(fp, "OSS: process with PID %d %s after running for %d ns\n", buf.pid, buf.text, buf.time);
 					shmptr->PIDmap[buf.pid] = 0;
 					stats.numComplete++;
 					mWait(&status);
 					currentChildren--;
 				}
+				// handle blocked process
+				else if (strcmp(buf.text, "blocked\0") == 0){
+					fprintf(fp, "OSS: prcoess with PID %d became blocked, adding to blocked queue\n");
+					enqueue(blockedQueue, buf.pid);
+				}
 				else {
-					printf("OSS: process with PID %d ran for %d ns, %s of its quantum.\n", buf.pid, buf.time, buf.text);
-					int x = shmptr->processTable[buf.pid - 1].priority;
+					fprintf(fp, "OSS: process with PID %d ran for %d ns, %s of its quantum\n", buf.pid, buf.time, buf.text);
+					x = shmptr->processTable[buf.pid - 1].priority;
 					if (strcmp(buf.text, "all\0") == 0) {
-						if (x < 4) x = shmptr->processTable[buf.pid - 1].priority++;
+						if (x < 4) { x = ++shmptr->processTable[buf.pid - 1].priority; }
 						enqueue(expired[x - 1], buf.pid);
-						printf("OSS: putting process with PID %d in expired queue %d.\n", buf.pid, x);
+						fprintf(fp, "OSS: putting process with PID %d in expired queue %d\n", buf.pid, x);
 					}
 					else {
 						enqueue(active[x - 1], buf.pid);
-						printf("OSS: putting process with PID %d back in active queue %d.\n", buf.pid, x);
+						fprintf(fp, "OSS: putting process with PID %d back in active queue %d\n", buf.pid, x);
 					}
 				}
 
@@ -318,6 +336,9 @@ int main(int argc, char* argv[]) {
 			}
 		}
 	}
+
+	printf("OSS: 100 process have been spawned, now terminating\n");
+
 	for (i = 0; i < currentChildren; i++) { mWait(&status); }
 	cleanup();
 }

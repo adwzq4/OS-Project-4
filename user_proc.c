@@ -13,29 +13,19 @@
 #include <sys/msg.h>
 #include "shared.h"
 
-//struct PCB {
-//	int PID;
-//	int PPID;
-//	int priority;
-//	int state;
-//	enum class;
-//	timespec cpuUsage;
-//	timespec lifetime;
-//	long int lastBurst;
-//};
-
 int main(int argc, char* argv[]) {
 	struct msgbuf buf;
-	int wholeQ, amountQ;
-	int i, q;
+	struct mtime waitTil;
+	int i, q, r, s, pid, shmid, msqid, term;
 	const int TERMRATIO = 5;
 
-	int pid = atoi(argv[0]);
+	// get pid from execl parameter and seed rand() with pid * time
+	pid = atoi(argv[0]);
 	srand(pid * time(0));
 
 	// create shared memory segment the same size as struct shmseg and get its shmid
 	key_t shmkey = ftok("oss", 137);
-	int shmid = shmget(shmkey, sizeof(struct shmseg), 0666 | IPC_CREAT);
+	shmid = shmget(shmkey, sizeof(struct shmseg), 0666 | IPC_CREAT);
 	if (shmid == -1) {
 		perror("user_proc: Error");
 		exit(-1);
@@ -43,55 +33,54 @@ int main(int argc, char* argv[]) {
 
 	// attach struct pointer to shared memory segment
 	struct shmseg* shmptr = shmat(shmid, (void*)0, 0);
-	if (shmptr == (void*)-1) {
-		perror("user_proc: Error");
-	}
+	if (shmptr == (void*)-1) { perror("user_proc: Error"); }
 
+	// attach to same message queue as parent
 	key_t msqkey = ftok("oss", 731);
+	msqid = msgget(msqkey, 0666 | IPC_CREAT);
+	if (msqid == -1) { perror("user_proc: Error"); }
 
-	int msqid = msgget(msqkey, 0666 | IPC_CREAT);
-	int msqidcpy = msqid;
-	if (msqid == -1) {
-		perror("user_proc: Error");
-	}
-
-	int term = 0;
+	term = 0;
 	while (1) {
-		//printf("msqid: %d\n", msqid);
 		term = rand() % TERMRATIO + 1;
 
-		if (msgrcv(msqid, &buf, sizeof(struct msgbuf), pid, 0) == -1) {
-			perror("user_proc: Error");
-		}
+		if (msgrcv(msqid, &buf, sizeof(struct msgbuf), pid, 0) == -1) { perror("user_proc: Error"); }
 
 		q = buf.time;
-		//printf("user_proc received message: %s\n", buf.text);
-		//printf("msqid now: %d\n", msqid);
 		buf.type = 20;
 		buf.pid = pid;
 
 		if (term == TERMRATIO) {
+			shmptr->processTable[pid-1].pState = terminated;
 			strcpy(buf.text, "terminated");
 			buf.time = rand() % q;
-			if (msgsnd(msqid, &buf, sizeof(struct msgbuf), 0) == -1) {
-				perror("user_proc: Error");
-			}
+			if (msgsnd(msqid, &buf, sizeof(struct msgbuf), 0) == -1) { perror("user_proc: Error"); }
 			break;
 		}
 
-		if (shmptr->processTable[pid-1].pClass == user) wholeQ = rand() % 2;
-		else wholeQ = 1;
+		if (shmptr->processTable[pid-1].pClass == user && rand() % 2 == 1) {
+			r = rand() % 4;
+			s = rand() % 1001;
 
-		if (wholeQ == 0) {
-			strcpy(buf.text, "part");
-			buf.time = rand() % q;
-		}
-		else {
-			strcpy(buf.text, "all");
+			if (r == 4) {
+				strcpy(buf.text, "part");
+				buf.time = q * (rand() % 100 + 1) / 100;
+			}
+			else {
+				strcpy(buf.text, "blocked");
+				buf.time = 10;
+				shmptr->processTable[pid-1].pState = blocked;
+				waitTil = addTime(shmptr->currentTime, r, BILLION / s);
+			}
 		}
 
-		if (msgsnd(msqid, &buf, sizeof(struct msgbuf), 0) == -1) {
-			perror("user_proc: Error");
+		else { strcpy(buf.text, "all"); }
+
+		if (msgsnd(msqid, &buf, sizeof(struct msgbuf), 0) == -1) { perror("user_proc: Error"); }
+
+		if (shmptr->processTable[pid-1].pState == blocked) {
+			while (!compareTimes(shmptr->currentTime, waitTil));
+			shmptr->processTable[pid-1].pState = ready;
 		}
 	}
 

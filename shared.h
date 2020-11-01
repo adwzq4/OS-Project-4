@@ -7,7 +7,9 @@
 
 #define BILLION 1000000000
 
-enum processClass { user, realTime };
+enum procClass { user, realTime };
+
+enum procState { run, ready, blocked, terminated };
 
 struct mtime {
 	int sec;
@@ -31,8 +33,8 @@ struct PCB {
 	int PID;
 	int PPID;
 	int priority;
-	int state;
-	enum processClass pClass;
+	enum procState pState;
+	enum procClass pClass;
 	struct mtime cpuUsage;
 	struct mtime lifetime;
 	long int lastBurst;

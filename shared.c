@@ -20,10 +20,8 @@ struct mtime addTime(struct mtime t1, int sec, long ns) {
 
 // compares two mtime structs
 int compareTimes(struct mtime t1, struct mtime t2) {
-    if (t1.sec < t2.sec || t1.sec == t2.sec && t1.ns < t2.ns) {
-        return 0;
-    }
-    else return 1;
+    if (t1.sec < t2.sec || t1.sec == t2.sec && t1.ns < t2.ns) { return 0; }
+    else { return 1; }
 }
 
 // converts an mtime struct to a double
@@ -60,7 +58,7 @@ int isEmpty(struct Queue* queue) {
 // Function to add an item to the queue. 
 // It changes rear and size 
 void enqueue(struct Queue* queue, int item) {
-    if (isFull(queue)) return;
+    if (isFull(queue)) { return; }
     queue->rear = (queue->rear + 1)
         % queue->capacity;
     queue->array[queue->rear] = item;
@@ -70,7 +68,7 @@ void enqueue(struct Queue* queue, int item) {
 // Function to remove an item from queue. 
 // It changes front and size 
 int dequeue(struct Queue* queue) {
-    if (isEmpty(queue)) return INT_MIN;
+    if (isEmpty(queue)) { return INT_MIN; }
     int item = queue->array[queue->front];
     queue->front = (queue->front + 1)
         % queue->capacity;
@@ -80,13 +78,12 @@ int dequeue(struct Queue* queue) {
 
 // Function to get front of queue 
 int front(struct Queue* queue) {
-    if (isEmpty(queue)) return INT_MIN;
+    if (isEmpty(queue)) { return INT_MIN; }
     return queue->array[queue->front];
 }
 
 // Function to get rear of queue 
 int rear(struct Queue* queue) {
-    if (isEmpty(queue)) return INT_MIN;
+    if (isEmpty(queue)) { return INT_MIN; }
     return queue->array[queue->rear];
 }
-
